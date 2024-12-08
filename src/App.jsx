@@ -31,6 +31,10 @@ function App() {
 
   useEffect(() => {
     scrollToBottom();
+    if(!localStorage.getItem('new')){
+      alert("Privacy of images are subjected to gemini privacy policy, text queries may be stored.")
+      localStorage.setItem('new', ' ');
+    }
   }, [response]);
   const handleSubmit = async () => {
     const webAppUrl = import.meta.env.VITE_API_SHEET_ID;
