@@ -1,6 +1,6 @@
 import "regenerator-runtime";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import sampleImage from "./image.png";
 import { RxCrossCircled } from "react-icons/rx";
 import ReactMarkdown from "react-markdown";
@@ -9,6 +9,12 @@ import SpeechRecognition, {
   useSpeechRecognition,
 } from "react-speech-recognition";
 import ButtonGroup from "./components/ButtonGroup";
+
+const createMessage = (role, text) => ({
+  id: `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  role,
+  text,
+});
 
 function App() {
   const [image, setImage] = useState(null);
@@ -21,8 +27,22 @@ function App() {
   const [usingvoice, setUsingvoice] = useState(false);
 
   const { transcript, listening, resetTranscript } = useSpeechRecognition();
-  const genAI = new GoogleGenerativeAI(import.meta.env.VITE_API_KEY);
-  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
+  const apiKey = import.meta.env.VITE_API_KEY;
+  const sheetWebhookUrl = import.meta.env.VITE_API_SHEET_ID;
+
+  const model = useMemo(() => {
+    if (!apiKey) {
+      return null;
+    }
+
+    try {
+      const genAI = new GoogleGenerativeAI(apiKey);
+      return genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
+    } catch (err) {
+      console.error("Failed to initialise Gemini model", err);
+      return null;
+    }
+  }, [apiKey]);
   const messagesEndRef = useRef(null);
 
   const scrollToBottom = () => {
@@ -31,21 +51,25 @@ function App() {
 
   useEffect(() => {
     scrollToBottom();
-    if(!localStorage.getItem('new')){
-      alert("Privacy of images are subjected to gemini privacy policy, text queries may be stored.")
-      localStorage.setItem('new', ' ');
+    if (!localStorage.getItem("new")) {
+      alert(
+        "Privacy of images are subjected to gemini privacy policy, text queries may be stored."
+      );
+      localStorage.setItem("new", " ");
     }
   }, [response]);
-  const handleSubmit = async () => {
-    const webAppUrl = import.meta.env.VITE_API_SHEET_ID;
-
+  const handleSubmit = async (text) => {
+    if (!sheetWebhookUrl) {
+      console.warn("VITE_API_SHEET_ID is not set. Skipping prompt logging.");
+      return;
+    }
     try {
-      await fetch(webAppUrl, {
+      await fetch(sheetWebhookUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ text: value }),
+        body: JSON.stringify({ text }),
         mode: "no-cors",
       });
     } catch (error) {
@@ -92,32 +116,52 @@ function App() {
       return;
     }
 
+    if (!model) {
+      setError(
+        "Gemini API key is missing or invalid. Add VITE_API_KEY to your .env file and restart the dev server."
+      );
+      return;
+    }
+
+    if (!value.trim()) {
+      setError("Please enter a question about the selected image.");
+      return;
+    }
+
     try {
+      setError("");
       setLoading(true);
-      setResponse((prev) => [...prev, `Qes: ${value}`]);
-      handleSubmit();
-      const image = {
+      setResponse((prev) => [...prev, createMessage("question", `Qes: ${value}`)]);
+      await handleSubmit(value);
+      const payloadImage = {
         inlineData: {
           data: imageData,
           mimeType: imagetype,
         },
       };
-      const response = await model.generateContent([value, image]);
-      const data = await response.response.text();
+      const geminiResponse = await model.generateContent([value, payloadImage]);
+      const data = await geminiResponse.response.text();
       if (usingvoice) {
         const speechsyn = window.speechSynthesis;
         const utter = new SpeechSynthesisUtterance(data);
         speechsyn.speak(utter);
         setUsingvoice(false);
       }
-      setResponse((prev) => [...prev, `Ans: ${data}`]);
+      setResponse((prev) => [
+        ...prev,
+        createMessage("answer", `Ans: ${data}`),
+      ]);
       setValue("");
       resetTranscript();
     } catch (error) {
       console.error(error);
-      setError("Something went Wrong!!!");
+      const message = error?.message?.includes("API key")
+        ? "Gemini API rejected the request. Check that VITE_API_KEY is set to a valid key."
+        : error?.message || "Failed to analyse the image.";
+      setError(message);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   // Function to handle Enter key press
@@ -181,15 +225,13 @@ function App() {
                   className="absolute top-[46%] left-[46%]"
                 />
               ) : (
-                response.map(function (data) {
+                response.map(({ id, text, role }) => {
                   return (
                     <div
-                      className={
-                        data ? "answer overflow-y-auto text-black" : ""
-                      }
-                      key={data.id}
+                      className={`answer overflow-y-auto text-black ${role}`}
+                      key={id}
                     >
-                      <ReactMarkdown children={`${data ? data : ""}`} />
+                      <ReactMarkdown>{text}</ReactMarkdown>
                     </div>
                   );
                 })
@@ -272,7 +314,7 @@ function Mic() {
       width="33"
       height="33"
       fill="currentColor"
-      class="bi bi-mic-fill"
+      className="bi bi-mic-fill"
       viewBox="0 0 16 16"
     >
       <path d="M5 3a3 3 0 0 1 6 0v5a3 3 0 0 1-6 0z" />
